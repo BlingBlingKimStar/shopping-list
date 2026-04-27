@@ -76,6 +76,11 @@
       background: #5a67d8;
     }
 
+    .input-row button:disabled {
+      background: #a0aec0;
+      cursor: not-allowed;
+    }
+
     .stats {
       font-size: 0.85rem;
       color: #718096;
@@ -188,6 +193,22 @@
       color: #a0aec0;
       font-size: 0.95rem;
       padding: 32px 0;
+      display: none;
+    }
+
+    .loading {
+      text-align: center;
+      color: #a0aec0;
+      font-size: 0.95rem;
+      padding: 32px 0;
+    }
+
+    .error-msg {
+      text-align: center;
+      color: #fc8181;
+      font-size: 0.85rem;
+      padding: 8px 0;
+      display: none;
     }
 
     .clear-btn {
@@ -218,10 +239,12 @@
       <button id="addBtn">추가</button>
     </div>
 
+    <div class="error-msg" id="errorMsg"></div>
     <div class="stats" id="stats"></div>
 
     <ul id="list"></ul>
 
+    <div class="loading" id="loading">불러오는 중...</div>
     <div class="empty" id="empty">아직 아이템이 없습니다.</div>
 
     <button class="clear-btn" id="clearBtn" style="display:none">
@@ -229,26 +252,29 @@
     </button>
   </div>
 
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script>
-    const STORAGE_KEY = 'shopping-items';
+    const SUPABASE_URL = 'https://rhsxxagzfltdnjvfnsxw.supabase.co';
+    const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJoc3h4YWd6Zmx0ZG5qdmZuc3h3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzcyMjkxMjgsImV4cCI6MjA5MjgwNTEyOH0.SILr3DsKycy9gGlum6XcSIyeLRkNIL03YSixT0yXrlw';
+
+    const { createClient } = supabase;
+    const db = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
     const itemInput = document.querySelector('#itemInput');
     const addBtn    = document.querySelector('#addBtn');
     const listEl    = document.querySelector('#list');
     const emptyEl   = document.querySelector('#empty');
+    const loadingEl = document.querySelector('#loading');
     const clearBtn  = document.querySelector('#clearBtn');
     const statsEl   = document.querySelector('#stats');
+    const errorMsg  = document.querySelector('#errorMsg');
 
-    let items = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
+    let items = [];
 
-    function save() {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
-    }
-
-    function escapeHtml(text) {
-      const d = document.createElement('div');
-      d.appendChild(document.createTextNode(text));
-      return d.innerHTML;
+    function showError(msg) {
+      errorMsg.textContent = msg;
+      errorMsg.style.display = 'block';
+      setTimeout(() => { errorMsg.style.display = 'none'; }, 3000);
     }
 
     function render() {
@@ -267,14 +293,14 @@
       statsEl.innerHTML = `총 <span>${items.length}</span>개 중 <span>${checkedCount}</span>개 완료`;
       clearBtn.style.display = checkedCount > 0 ? 'block' : 'none';
 
-      items.forEach((item, idx) => {
+      items.forEach(item => {
         const li = document.createElement('li');
         if (item.checked) li.classList.add('checked');
 
         const checkBtn = document.createElement('button');
         checkBtn.className = 'check-btn';
         checkBtn.setAttribute('aria-label', item.checked ? '완료 취소' : '완료 표시');
-        checkBtn.addEventListener('click', () => toggleCheck(idx));
+        checkBtn.addEventListener('click', () => toggleCheck(item.id));
 
         const textSpan = document.createElement('span');
         textSpan.className = 'item-text';
@@ -284,38 +310,101 @@
         delBtn.className = 'delete-btn';
         delBtn.title = '삭제';
         delBtn.textContent = '✕';
-        delBtn.addEventListener('click', () => deleteItem(idx));
+        delBtn.addEventListener('click', () => deleteItem(item.id));
 
         li.append(checkBtn, textSpan, delBtn);
         listEl.appendChild(li);
       });
     }
 
-    function addItem() {
+    async function loadItems() {
+      const { data, error } = await db
+        .from('shopping_items')
+        .select('*')
+        .order('created_at');
+
+      loadingEl.style.display = 'none';
+
+      if (error) {
+        showError('데이터를 불러오지 못했습니다.');
+        console.error(error);
+        return;
+      }
+
+      items = data;
+      render();
+    }
+
+    async function addItem() {
       const text = itemInput.value.trim();
       if (!text) return;
-      items.push({ text, checked: false });
+
+      addBtn.disabled = true;
+      const { data, error } = await db
+        .from('shopping_items')
+        .insert({ text, checked: false })
+        .select()
+        .single();
+      addBtn.disabled = false;
+
+      if (error) {
+        showError('아이템 추가에 실패했습니다.');
+        console.error(error);
+        return;
+      }
+
+      items.push(data);
       itemInput.value = '';
-      save();
       render();
       itemInput.focus();
     }
 
-    function toggleCheck(idx) {
-      items[idx].checked = !items[idx].checked;
-      save();
+    async function toggleCheck(id) {
+      const item = items.find(i => i.id === id);
+      const { error } = await db
+        .from('shopping_items')
+        .update({ checked: !item.checked })
+        .eq('id', id);
+
+      if (error) {
+        showError('상태 변경에 실패했습니다.');
+        console.error(error);
+        return;
+      }
+
+      item.checked = !item.checked;
       render();
     }
 
-    function deleteItem(idx) {
-      items.splice(idx, 1);
-      save();
+    async function deleteItem(id) {
+      const { error } = await db
+        .from('shopping_items')
+        .delete()
+        .eq('id', id);
+
+      if (error) {
+        showError('삭제에 실패했습니다.');
+        console.error(error);
+        return;
+      }
+
+      items = items.filter(i => i.id !== id);
       render();
     }
 
-    function clearChecked() {
+    async function clearChecked() {
+      const { error } = await db
+        .from('shopping_items')
+        .delete()
+        .eq('checked', true);
+
+      if (error) {
+        showError('완료 항목 삭제에 실패했습니다.');
+        console.error(error);
+        return;
+      }
+
       items = items.filter(i => !i.checked);
-      save();
       render();
     }
 
@@ -325,7 +414,7 @@
       if (e.key === 'Enter') addItem();
     });
 
-    render();
+    loadItems();
   </script>
 </body>
 </html>
